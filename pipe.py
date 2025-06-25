@@ -12,10 +12,10 @@ from airflow.providers.standard.operators.python import PythonOperator
 # --- LLM Configuration ---
 JUDGE_MODEL = "gemini-2.5-flash"
 LOCAL_MODEL = "google/gemma-3-1b-pt"
-REMOTE_MODEL = "gemini-1.5-flash"
+REMOTE_MODEL = "gemma-3-1b-it"
 user_query = "Who is Bulgakov? Provide a brief summary of his life and key works."
 max_tokens_to_generate = 128
-num_generations_to_track = 3
+num_generations_to_track = 12
 system_prompt_template = "Answer the following question in two sentences: {query}"
 MLFLOW_LOG_SYSTEM_METRICS = True
 
@@ -45,7 +45,7 @@ def _run_local_llm(ti):
     # Push the result to XCom
     ti.xcom_push(key='local_llm_result', value=local_results)
 
-'''
+
 def _run_local_llm(ti):
     """
     Calls a local LLM model (Hugging Face pipeline) and pushes the result to XCom.
@@ -86,7 +86,6 @@ def _run_local_llm(ti):
 
         # --- Log Basic Params ---
         mlflow.log_param("local_model_name", LOCAL_MODEL)
-        mlflow.log_param("judge_model_name", JUDGE_MODEL)
         mlflow.log_param("user_query", user_query)
         mlflow.log_param("system_prompt_template", system_prompt_template)
         mlflow.log_param("max_tokens_to_generate", max_tokens_to_generate)
@@ -99,6 +98,7 @@ def _run_local_llm(ti):
         pipe_start = time.perf_counter()
         try:
             pipe = pipeline("text-generation", model=LOCAL_MODEL, torch_dtype="auto", device="cpu")
+            # pipe = pipeline("text-generation", model=REMOTE_MODEL, torch_dtype="auto", device="cpu")
         except Exception as e:
             print(f"Error initializing Hugging Face pipeline: {e}")
             ti.xcom_push(key='local_llm_result', value={"error": str(e)})
@@ -160,7 +160,7 @@ def _run_local_llm(ti):
     # Push the result to XCom
     ti.xcom_push(key='local_llm_result', value=local_results)
     print(f"Local LLM operation completed.")
-'''
+
 
 def _run_remote_llm(ti):
     """
@@ -200,30 +200,12 @@ def _run_remote_llm(ti):
 
         # --- Log Basic Params ---
         mlflow.log_param("remote_model_name", REMOTE_MODEL)
-        mlflow.log_param("judge_model_name", JUDGE_MODEL)
         mlflow.log_param("user_query", user_query)
         mlflow.log_param("system_prompt_template", system_prompt_template)
         mlflow.log_param("max_tokens_to_generate", max_tokens_to_generate)
 
         # Construct the full prompt
         full_prompt = system_prompt_template.format(query=user_query)
-
-        # --- Initialize Remote Model ---
-        print(f"Initializing remote model: {REMOTE_MODEL}...")
-        model_init_start = time.perf_counter()
-        try:
-            model = genai.GenerativeModel(REMOTE_MODEL)
-        except Exception as e:
-            print(f"Error initializing Gemini model: {e}")
-            ti.xcom_push(key='remote_llm_result', value={"error": str(e)})
-            return # Exit early if model fails to initialize
-        model_init_end = time.perf_counter()
-        init_time = model_init_end - model_init_start
-        mlflow.log_metric("remote_model_init_time_seconds", init_time)
-        print(f"Remote Model Initialization Time: {init_time:.4f} seconds\n")
-
-        print(f"Input Query: '{user_query}'")
-        print(f"Full Prompt sent to remote LLM: '{full_prompt}'")
 
         # --- Run Generations ---
         remote_results = []
@@ -235,11 +217,8 @@ def _run_remote_llm(ti):
                 try:
                     # For Gemini, the prompt is typically passed directly to generate_content
                     response = client.models.generate_content(
-                        full_prompt,
-                        generation_config=genai.types.GenerationConfig(
-                            max_output_tokens=max_tokens_to_generate,
-                            temperature=0.7 # Add temperature for variability
-                        )
+                        model=REMOTE_MODEL,
+                        contents=full_prompt
                     )
                     generated_text = response.text.strip()
                 except Exception as e:
@@ -280,11 +259,15 @@ def _select_best_answer(ti):
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
     # Pull results from the two parallel tasks using their task_ids and XCom keys
-    local_llm_results = ti.xcom_pull(task_ids='run_local_llm', key='local_llm_result')
-    remote_llm_results = ti.xcom_pull(task_ids='run_remote_llm', key='remote_llm_result')
+    local_llm_results = ti.xcom_pull(task_ids='run_local_llm', key='local_llm_result') #[{'attempt': 1, 'text': 'Bulgakov is a renowned Russian Soviet writer best known for his sprawling, fantastical novels, particularly *The Master and Margarita*. Born in 1862, he faced immense hardship and struggled with alcoholism throughout his life, ultimately dedicating himself to writing and creating a unique, often surreal, world. His works, like *The Master and Margarita*, explore themes of faith, love, and the absurdity of human existence with a distinctive blend of satire, mythology, and psychological depth.', 'generation_time_seconds': 1.1100758000002315}, {'attempt': 2, 'text': 'Bulgakov is a renowned Russian Soviet writer best known for his sprawling, fantastical novels, particularly *The Master and Margarita*. Born in 1862, he faced immense hardship and struggled with alcoholism throughout his life, ultimately dedicating himself to writing and creating a unique, often surreal, world. His works, like *The Master and Margarita*, explore themes of faith, love, and the absurdity of existence with a distinctive blend of satire, mythology, and psychological depth.', 'generation_time_seconds': 0.8099336999998741}, {'attempt': 3, 'text': 'Bulgakov is a renowned Russian Soviet writer best known for his sprawling, fantastical novels, particularly *The Master and Margarita*. Born in 1862, he faced immense hardship and struggled with alcoholism throughout his life, ultimately dedicating himself to writing and creating a unique, often surreal, world. His works, like *The Master and Margarita*, explore themes of faith, love, and the absurdity of existence with a distinctive blend of satire, mythology, and psychological depth.', 'generation_time_seconds': 1.0337599019999288}]
+    #ti.xcom_pull(task_ids='run_local_llm', key='local_llm_result')
+    remote_llm_results = ti.xcom_pull(task_ids='run_remote_llm', key='remote_llm_result') #[{'attempt': 1, 'text': 'Bulgakov is a renowned Russian Soviet writer best known for his sprawling, fantastical novels, particularly *The Master and Margarita*. Born in 1862, he faced immense hardship and struggled with alcoholism throughout his life, ultimately dedicating himself to writing and creating a unique, often surreal, world. His works, like *The Master and Margarita*, explore themes of faith, love, and the absurdity of existence with a distinctive blend of satire, mythology, and psychological depth.', 'generation_time_seconds': 0.7094635490002474}, {'attempt': 2, 'text': 'Bulgakov is a renowned Russian Soviet writer best known for his sprawling, fantastical novels, particularly *The Master and Margarita*. Born in 1862, he faced immense hardship and struggled with alcoholism throughout his life, ultimately dedicating himself to writing and creating a unique, often surreal, world. His works, like *The Master and Margarita*, explore themes of faith, love, and the absurdity of existence with a distinctive blend of satire, mythology, and psychological depth.', 'generation_time_seconds': 0.7885449410000547}, {'attempt': 3, 'text': 'Bulgakov is a renowned Russian Soviet writer best known for his sprawling, fantastical novels, particularly *The Master and Margarita*. Born in 1862, he faced immense hardship and struggled with alcoholism throughout his life, ultimately dedicating himself to writing and creating a unique, often surreal, world. His works, like *The Master and Margarita*, explore themes of faith, morality, and the absurdity of human existence, earning him international acclaim and a devoted following.', 'generation_time_seconds': 1.0193958129998464}]
+    #ti.xcom_pull(task_ids='run_remote_llm', key='remote_llm_result')
 
     print(f"Results from local LLM: {local_llm_results}")
     print(f"Results from remote LLM: {remote_llm_results}")
+    mlflow.log_param("results_from_local_llm", local_llm_results)
+    mlflow.log_param("results_from_remote_llm", remote_llm_results)
 
     if not local_llm_results and not remote_llm_results:
         summary = "No results available from either LLM operation."
@@ -328,14 +311,7 @@ def _select_best_answer(ti):
 
         # Moved inside the function to avoid top-level execution
         client = genai.Client(api_key=google_api_key)
-
         print(f"Using judge model: {JUDGE_MODEL}")
-        try:
-            judge_model = genai.GenerativeModel(JUDGE_MODEL)
-        except Exception as e:
-            print(f"Error initializing judge model: {e}")
-            ti.xcom_push(key='final_best_result_summary', value={"error": str(e)})
-            return # Exit early
 
         # Construct the judging prompt
         judging_instructions = (
@@ -344,7 +320,20 @@ def _select_best_answer(ti):
             f"The original instruction for the LLMs was: '{system_prompt_template.format(query='')}'. "
             f"Evaluate the following answers for accuracy, relevance, and adherence to the 'two sentences' constraint. "
             f"Rank them from best to worst, providing a brief justification for each. "
-            f"Return your response as a JSON array of objects, each with 'rank', 'source', 'attempt', 'text', and 'justification'.\n\n"
+            f"**IMPORTANT: Return your response ONLY as a JSON array of objects.** "
+            f"Each object must have 'rank' (integer), 'source' (string), 'attempt' (integer), 'text' (string), and 'justification' (string). "
+            f"Example format:\n"
+            f"```json\n"
+            f"[\n"
+            f"  {{\n"
+            f'    "rank": 1,\n'
+            f'    "source": "local",\n'
+            f'    "attempt": 1,\n'
+            f'    "text": "Best answer text.",\n'
+            f'    "justification": "This answer was accurate and concise."\n'
+            f"  }}\n"
+            f"]\n"
+            f"```\n\n"
             f"Answers to evaluate:\n"
         )
 
@@ -355,54 +344,15 @@ def _select_best_answer(ti):
         print("Sending judging request to LLM...")
         print(f"Judging instructions:\n{judging_instructions}")
 
-        judged_results = []
-        try:
-            judge_response = client.models.generate_content(
-                judging_instructions,
-                generation_config=genai.types.GenerationConfig(
-                    response_mime_type="application/json",
-                    max_output_tokens=512
-                ),
-            )
+        judge_response = client.models.generate_content(
+            model=JUDGE_MODEL,
+            contents=judging_instructions
+        )
 
-            # Try to parse the JSON response
-            raw_judged_text = judge_response.text
-            judged_data = json.loads(raw_judged_text)
-            judged_results = sorted(judged_data, key=lambda x: x.get('rank', float('inf')))
-            print(f"Judge Model Raw Response:\n{raw_judged_text}")
-            print(f"Judge Model Parsed Results:\n{json.dumps(judged_results, indent=2)}")
-
-            mlflow.log_param("judge_prompt", judging_instructions)
-            mlflow.log_param("judge_raw_response", raw_judged_text)
-            mlflow.log_param("judged_ranking", json.dumps(judged_results))
-
-            if judged_results:
-                best_answer_info = judged_results[0]
-                selected_best = (
-                    f"The best answer (ranked by '{JUDGE_MODEL}') is from "
-                    f"{best_answer_info.get('source', 'N/A')} (Attempt {best_answer_info.get('attempt', 'N/A')}).\n"
-                    f"Rank: {best_answer_info.get('rank', 'N/A')}\n"
-                    f"Justification: {best_answer_info.get('justification', 'N/A')}\n"
-                    f"Text: \"{best_answer_info.get('text', 'N/A')}\""
-                )
-            else:
-                selected_best = "Judge model could not determine a best answer or returned empty results."
-
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON from judge model: {e}")
-            selected_best = f"Judge model returned unparseable JSON. Raw response: {judge_response.text}"
-            mlflow.log_param("judge_error", "JSONDecodeError")
-            mlflow.log_param("judge_raw_response", judge_response.text)
-        except Exception as e:
-            print(f"An unexpected error occurred during judging: {e}")
-            selected_best = f"An error occurred during judging: {e}"
-            mlflow.log_param("judge_error", str(e))
-
-        print(f"Selected best answer summary:\n{selected_best}")
-        mlflow.log_param("final_selected_best_summary", selected_best)
-        print(f"MLflow Run ID for judging: {run.info.run_id}")
-
-    ti.xcom_push(key='final_best_result_summary', value=selected_best)
+        # Try to parse the JSON response
+        raw_judged_text = judge_response.text
+        mlflow.log_param("judge_prompt", judging_instructions)
+        mlflow.log_param("judge_raw_response", raw_judged_text)
 
 
 with DAG(
